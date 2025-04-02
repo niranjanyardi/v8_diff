@@ -11,6 +11,7 @@
 #include "src/base/functional.h"
 #include "src/base/logging.h"
 #include "src/base/platform/platform.h"
+#include "src/base/platform/wrappers.h"
 #include "src/utils/memcopy.h"
 
 namespace v8 {
@@ -134,6 +135,7 @@ void StrNCpy(Vector<char> dest, const char* src, size_t n) {
 }
 
 char* ReadLine(const char* prompt) {
+#if !defined(V8_OS_STARBOARD)
   char* result = nullptr;
   char line_buf[256];
   size_t offset = 0;
@@ -180,12 +182,18 @@ char* ReadLine(const char* prompt) {
   DCHECK_NOT_NULL(result);
   result[offset] = '\0';
   return result;
+#else
+  return nullptr;
+#endif
 }
 
 namespace {
 
 std::vector<char> ReadCharsFromFile(FILE* file, bool* exists, bool verbose,
                                     const char* filename) {
+#if defined(V8_OS_STARBOARD)
+  return std::vector<char>();
+#else
   if (file == nullptr || fseek(file, 0, SEEK_END) != 0) {
     if (verbose) {
       base::OS::PrintError("Cannot read from file %s.\n", filename);
@@ -202,7 +210,7 @@ std::vector<char> ReadCharsFromFile(FILE* file, bool* exists, bool verbose,
   for (ptrdiff_t i = 0; i < size && feof(file) == 0;) {
     ptrdiff_t read = fread(result.data() + i, 1, size - i, file);
     if (read != (size - i) && ferror(file) != 0) {
-      fclose(file);
+      base::Fclose(file);
       *exists = false;
       return std::vector<char>();
     }
@@ -210,14 +218,19 @@ std::vector<char> ReadCharsFromFile(FILE* file, bool* exists, bool verbose,
   }
   *exists = true;
   return result;
+#endif  // V8_OS_STARBOARD
 }
 
 std::vector<char> ReadCharsFromFile(const char* filename, bool* exists,
                                     bool verbose) {
+#if defined(V8_OS_STARBOARD)
+  return std::vector<char>();
+#else
   FILE* file = base::OS::FOpen(filename, "rb");
   std::vector<char> result = ReadCharsFromFile(file, exists, verbose, filename);
-  if (file != nullptr) fclose(file);
+  if (file != nullptr) base::Fclose(file);
   return result;
+#endif  // #if !defined(V8_OS_STARBOARD)
 }
 
 std::string VectorToString(const std::vector<char>& chars) {
@@ -228,6 +241,9 @@ std::string VectorToString(const std::vector<char>& chars) {
 }
 
 int WriteCharsToFile(const char* str, int size, FILE* f) {
+#if defined(V8_OS_STARBOARD)
+  return 0;
+#else
   int total = 0;
   while (total < size) {
     int write = static_cast<int>(fwrite(str, 1, size - total, f));
@@ -238,6 +254,7 @@ int WriteCharsToFile(const char* str, int size, FILE* f) {
     str += write;
   }
   return total;
+#endif
 }
 
 }  // namespace
@@ -253,6 +270,7 @@ std::string ReadFile(FILE* file, bool* exists, bool verbose) {
 }
 
 int WriteChars(const char* filename, const char* str, int size, bool verbose) {
+#if !defined(V8_OS_STARBOARD)
   FILE* f = base::OS::FOpen(filename, "wb");
   if (f == nullptr) {
     if (verbose) {
@@ -261,8 +279,11 @@ int WriteChars(const char* filename, const char* str, int size, bool verbose) {
     return 0;
   }
   int written = WriteCharsToFile(str, size, f);
-  fclose(f);
+  base::Fclose(f);
   return written;
+#else
+  return 0;
+#endif
 }
 
 int WriteBytes(const char* filename, const byte* bytes, int size,

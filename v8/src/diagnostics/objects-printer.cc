@@ -2678,7 +2678,7 @@ V8_EXPORT_PRIVATE extern void _v8_internal_Print_LayoutDescriptor(
     void* object) {
   i::Object o(GetObjectFromRaw(object));
   if (!o.IsLayoutDescriptor()) {
-    printf("Please provide a layout descriptor\n");
+    i::PrintF("Please provide a layout descriptor\n");
   } else {
     i::LayoutDescriptor::cast(o).Print();
   }
@@ -2692,7 +2692,7 @@ V8_EXPORT_PRIVATE extern void _v8_internal_Print_StackTrace() {
 V8_EXPORT_PRIVATE extern void _v8_internal_Print_TransitionTree(void* object) {
   i::Object o(GetObjectFromRaw(object));
   if (!o.IsMap()) {
-    printf("Please provide a valid Map\n");
+    i::PrintF("Please provide a valid Map\n");
   } else {
 #if defined(DEBUG) || defined(OBJECT_PRINT)
     i::DisallowHeapAllocation no_gc;

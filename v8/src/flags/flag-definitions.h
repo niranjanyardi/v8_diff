@@ -1503,7 +1503,7 @@ DEFINE_IMPLICATION(default_to_experimental_regexp_engine,
 DEFINE_BOOL(trace_experimental_regexp_engine, false,
             "trace execution of experimental regexp engine")
 
-DEFINE_BOOL(enable_experimental_regexp_engine_on_excessive_backtracks, true,
+DEFINE_BOOL(enable_experimental_regexp_engine_on_excessive_backtracks, false,
             "fall back to a breadth-first regexp engine on excessive "
             "backtracking")
 DEFINE_UINT(regexp_backtracks_before_fallback, 50000,
@@ -1813,7 +1813,7 @@ DEFINE_BOOL(vtune_prof_annotate_wasm, false,
             "Used when v8_enable_vtunejit is enabled, load wasm source map and "
             "provide annotate support (experimental).")
 
-DEFINE_BOOL(win64_unwinding_info, true, "Enable unwinding info for Windows/x64")
+DEFINE_BOOL(win64_unwinding_info, false, "Enable unwinding info for Windows/x64")
 
 #ifdef V8_TARGET_ARCH_ARM
 // Unsupported on arm. See https://crbug.com/v8/8713.

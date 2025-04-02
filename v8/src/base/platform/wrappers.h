@@ -7,23 +7,47 @@
 
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "src/base/base-export.h"
+
+#if defined(V8_OS_STARBOARD)
+#include "starboard/memory.h"
+#endif
 
 namespace v8 {
 namespace base {
 
-void* Malloc(size_t size);
+// Common libstd implementations.
+// inline implementations are preferred here due to performance concerns.
+inline void* Malloc(size_t size) { return malloc(size); }
 
-void* Realloc(void* memory, size_t size);
+inline void* Realloc(void* memory, size_t size) {
+  return realloc(memory, size);
+}
 
-void Free(void* memory);
+inline void Free(void* memory) { return free(memory); }
 
-void* Calloc(size_t count, size_t size);
+inline void* Calloc(size_t count, size_t size) { return calloc(count, size); }
 
-void* Memcpy(void* dest, const void* source, size_t count);
+inline void* Memcpy(void* dest, const void* source, size_t count) {
+  return memcpy(dest, source, count);
+}
 
-FILE* Fopen(const char* filename, const char* mode);
+#if !defined(V8_OS_STARBOARD)
+inline FILE* Fopen(const char* filename, const char* mode) {
+  return fopen(filename, mode);
+}
 
-int Fclose(FILE* stream);
+inline int Fclose(FILE* stream) { return fclose(stream); }
+
+#else  // V8_OS_STARBOARD
+inline FILE* Fopen(const char* filename, const char* mode) { return NULL; }
+
+inline int Fclose(FILE* stream) { return -1; }
+
+#endif  // V8_OS_STARBOARD
 
 }  // namespace base
 }  // namespace v8

@@ -1173,7 +1173,11 @@ void CodeAssembler::Branch(TNode<BoolT> condition,
   }
 
   Label vtrue(this), vfalse(this);
+#if !defined(DISABLE_WASM_COMPILER_ISSUE_STARBOARD)
   Branch(condition, &vtrue, &vfalse);
+#else
+  Branch(static_cast<SloppyTNode<IntegralT>>(condition), &vtrue, &vfalse);
+#endif
 
   Bind(&vtrue);
   true_body();
@@ -1190,7 +1194,11 @@ void CodeAssembler::Branch(TNode<BoolT> condition, Label* true_label,
   }
 
   Label vfalse(this);
+#if !defined(DISABLE_WASM_COMPILER_ISSUE_STARBOARD)
   Branch(condition, true_label, &vfalse);
+#else
+  Branch(static_cast<SloppyTNode<IntegralT>>(condition), true_label, &vfalse);
+#endif
   Bind(&vfalse);
   false_body();
 }
@@ -1204,7 +1212,11 @@ void CodeAssembler::Branch(TNode<BoolT> condition,
   }
 
   Label vtrue(this);
+#if !defined(DISABLE_WASM_COMPILER_ISSUE_STARBOARD)
   Branch(condition, &vtrue, false_label);
+#else
+  Branch(static_cast<SloppyTNode<IntegralT>>(condition), &vtrue, false_label);
+#endif
   Bind(&vtrue);
   true_body();
 }

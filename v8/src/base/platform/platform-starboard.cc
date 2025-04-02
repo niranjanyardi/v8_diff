@@ -6,20 +6,27 @@
 // abstraction layer for Cobalt, an HTML5 container used mainly by YouTube
 // apps in the livingroom.
 
+#include <stdio.h>
+#include <pthread.h>
+#include <unistd.h>
+
 #include "src/base/lazy-instance.h"
 #include "src/base/macros.h"
 #include "src/base/platform/platform.h"
 #include "src/base/platform/time.h"
 #include "src/base/timezone-cache.h"
 #include "src/base/utils/random-number-generator.h"
-#include "starboard/common/condition_variable.h"
+#include "starboard/client_porting/eztime/eztime.h"
 #include "starboard/common/log.h"
+#include "starboard/common/process.h"
 #include "starboard/common/string.h"
+#include "starboard/common/time.h"
 #include "starboard/configuration.h"
 #include "starboard/configuration_constants.h"
-#include "starboard/memory.h"
-#include "starboard/time.h"
+#include "starboard/thread.h"
 #include "starboard/time_zone.h"
+
+#include "sys/mman.h"
 
 namespace v8 {
 namespace base {
@@ -80,18 +87,11 @@ void OS::Initialize(bool hard_abort, const char* const gc_fake_mmap) {
 }
 
 int OS::GetUserTime(uint32_t* secs, uint32_t* usecs) {
-#if SB_API_VERSION >= 12
-  if (!SbTimeIsTimeThreadNowSupported()) return -1;
-#endif
-
-#if SB_API_VERSION >= 12 || SB_HAS(TIME_THREAD_NOW)
-  SbTimeMonotonic thread_now = SbTimeGetMonotonicThreadNow();
-  *secs = thread_now / kSbTimeSecond;
-  *usecs = thread_now % kSbTimeSecond;
+  int64_t thread_now = starboard::CurrentMonotonicThreadTime();
+  if (thread_now == 0) return -1;
+  *secs = thread_now / 1'000'000;
+  *usecs = thread_now % 1'000'000;
   return 0;
-#else
-  return -1;
-#endif
 }
 
 double OS::TimeCurrentMillis() { return Time::Now().ToJsTime(); }
@@ -128,13 +128,13 @@ void OS::SetRandomMmapSeed(int64_t seed) { SB_NOTIMPLEMENTED(); }
 void* OS::GetRandomMmapAddr() { return nullptr; }
 
 void* Allocate(void* address, size_t size, OS::MemoryPermission access) {
-  SbMemoryMapFlags sb_flags;
+  int prot_flags;
   switch (access) {
     case OS::MemoryPermission::kNoAccess:
-      sb_flags = SbMemoryMapFlags(0);
+      prot_flags = PROT_NONE;
       break;
     case OS::MemoryPermission::kReadWrite:
-      sb_flags = SbMemoryMapFlags(kSbMemoryMapProtectReadWrite);
+      prot_flags = PROT_READ | PROT_WRITE;
       break;
     default:
       SB_LOG(ERROR) << "The requested memory allocation access is not"
@@ -142,43 +142,12 @@ void* Allocate(void* address, size_t size, OS::MemoryPermission access) {
                     << static_cast<int>(access);
       return nullptr;
   }
-  void* result = SbMemoryMap(size, sb_flags, "v8::Base::Allocate");
-  if (result == SB_MEMORY_MAP_FAILED) {
+  void* result = mmap(nullptr, size, prot_flags, MAP_PRIVATE | MAP_ANON, -1, 0);
+  if (result == MAP_FAILED) {
     return nullptr;
   }
   return result;
 }
-
-// The following code was taken from old v8 to deal with rounding up pointers.
-namespace {
-// Compute the 0-relative offset of some absolute value x of type T.
-// This allows conversion of Addresses and integral types into
-// 0-relative int offsets.
-template <typename T>
-constexpr inline intptr_t OffsetFrom(T x) {
-  return x - static_cast<T>(0);
-}
-
-// Compute the absolute value of type T for some 0-relative offset x.
-// This allows conversion of 0-relative int offsets into Addresses and
-// integral types.
-template <typename T>
-constexpr inline T AddressFrom(intptr_t x) {
-  return static_cast<T>(static_cast<T>(0) + x);
-}
-
-template <typename T>
-inline T RoundDown(T x, intptr_t m) {
-  // m must be a power of two.
-  DCHECK(m != 0 && ((m & (m - 1)) == 0));
-  return AddressFrom<T>(OffsetFrom(x) & -m);
-}
-
-template <typename T>
-inline T RoundUpOld(T x, intptr_t m) {
-  return RoundDown<T>(static_cast<T>(x + m - 1), m);
-}
-}  // namespace
 
 // static
 void* OS::Allocate(void* address, size_t size, size_t alignment,
@@ -195,7 +164,8 @@ void* OS::Allocate(void* address, size_t size, size_t alignment,
 
   // Unmap memory allocated before the aligned base address.
   uint8_t* base = static_cast<uint8_t*>(result);
-  uint8_t* aligned_base = RoundUpOld(base, alignment);
+  uint8_t* aligned_base = reinterpret_cast<uint8_t*>(
+      RoundUp(reinterpret_cast<uintptr_t>(base), alignment));
   if (aligned_base != base) {
     DCHECK_LT(base, aligned_base);
     size_t prefix_size = static_cast<size_t>(aligned_base - base);
@@ -216,39 +186,38 @@ void* OS::Allocate(void* address, size_t size, size_t alignment,
 
 // static
 bool OS::Free(void* address, const size_t size) {
-  return SbMemoryUnmap(address, size);
+  return munmap(address, size) == 0;
 }
 
 // static
 bool OS::Release(void* address, size_t size) {
-  return SbMemoryUnmap(address, size);
+  return munmap(address, size) == 0;
 }
 
 // static
 bool OS::SetPermissions(void* address, size_t size, MemoryPermission access) {
-  SbMemoryMapFlags new_protection;
+  int new_protection;
   switch (access) {
     case OS::MemoryPermission::kNoAccess:
-      new_protection = SbMemoryMapFlags(0);
+      new_protection = PROT_NONE;
       break;
     case OS::MemoryPermission::kRead:
-      new_protection = SbMemoryMapFlags(kSbMemoryMapProtectRead);
+      new_protection = PROT_READ;
     case OS::MemoryPermission::kReadWrite:
-      new_protection = SbMemoryMapFlags(kSbMemoryMapProtectReadWrite);
+      new_protection = PROT_READ | PROT_WRITE;
       break;
     case OS::MemoryPermission::kReadExecute:
-#if SB_CAN(MAP_EXECUTABLE_MEMORY)
-      new_protection =
-          SbMemoryMapFlags(kSbMemoryMapProtectRead | kSbMemoryMapProtectExec);
-#else
-      UNREACHABLE();
-#endif
+      new_protection = PROT_READ | PROT_EXEC;
+      break;
+    case OS::MemoryPermission::kReadWriteExecute:
+      new_protection = PROT_READ| PROT_WRITE| PROT_EXEC;
       break;
     default:
+      SB_LOG(WARNING) << "OS::SetPermissions: Unsupported type access=" << static_cast<int>(access);
       // All other types are not supported by Starboard.
       return false;
   }
-  return SbMemoryProtect(address, size, new_protection);
+  return mprotect(address, size, new_protection) == 0;
 }
 
 // static
@@ -257,7 +226,7 @@ bool OS::HasLazyCommits() {
   return false;
 }
 
-void OS::Sleep(TimeDelta interval) { SbThreadSleep(interval.InMicroseconds()); }
+void OS::Sleep(TimeDelta interval) { usleep(interval.InMicroseconds()); }
 
 void OS::Abort() { SbSystemBreakIntoDebugger(); }
 
@@ -293,11 +262,12 @@ OS::MemoryMappedFile* OS::MemoryMappedFile::create(const char* name,
 StarboardMemoryMappedFile::~StarboardMemoryMappedFile() { SB_NOTIMPLEMENTED(); }
 
 int OS::GetCurrentProcessId() {
-  SB_NOTIMPLEMENTED();
-  return 0;
+  return starboard::kStarboardFakeProcessId;
 }
 
-int OS::GetCurrentThreadId() { return SbThreadGetId(); }
+int OS::GetCurrentThreadId() { 
+  return SbThreadGetId();
+}
 
 int OS::GetLastError() { return SbSystemGetLastError(); }
 
@@ -371,7 +341,7 @@ int OS::SNPrintF(char* str, int length, const char* format, ...) {
 }
 
 int OS::VSNPrintF(char* str, int length, const char* format, va_list args) {
-  int n = SbStringFormat(str, length, format, args);
+  int n = vsnprintf(str, length, format, args);
   if (n < 0 || n >= length) {
     // If the length is zero, the assignment fails.
     if (length > 0) str[length - 1] = '\0';
@@ -386,7 +356,7 @@ int OS::VSNPrintF(char* str, int length, const char* format, va_list args) {
 //
 
 void OS::StrNCpy(char* dest, int length, const char* src, size_t n) {
-  SbStringCopy(dest, src, n);
+  strncpy(dest, src, n);
 }
 
 // ----------------------------------------------------------------------------
@@ -395,8 +365,8 @@ void OS::StrNCpy(char* dest, int length, const char* src, size_t n) {
 
 class Thread::PlatformData {
  public:
-  PlatformData() : thread_(kSbThreadInvalid) {}
-  SbThread thread_;  // Thread handle for pthread.
+  PlatformData() : thread_(0) {}
+  pthread_t thread_;  // Thread handle for pthread.
   // Synchronizes thread creation
   Mutex thread_creation_mutex_;
 };
@@ -410,7 +380,7 @@ Thread::Thread(const Options& options)
 
 Thread::~Thread() { delete data_; }
 
-static void SetThreadName(const char* name) { SbThreadSetName(name); }
+static void SetThreadName(const char* name) { pthread_setname_np(pthread_self(), name); }
 
 static void* ThreadEntry(void* arg) {
   Thread* thread = reinterpret_cast<Thread*>(arg);
@@ -418,6 +388,11 @@ static void* ThreadEntry(void* arg) {
   // we don't know which thread will run first (the original thread or the new
   // one).
   { LockGuard<Mutex> lock_guard(&thread->data()->thread_creation_mutex_); }
+#if SB_API_VERSION >= 16
+  if (kSbHasThreadPrioritySupport) {
+    SbThreadSetPriority(kSbThreadPriorityNormal);
+  }
+#endif
   SetThreadName(thread->name());
   // DCHECK_NE(thread->data()->thread_, kNoThread);
   thread->NotifyStartedAndRun();
@@ -430,34 +405,42 @@ void Thread::set_name(const char* name) {
   name_[sizeof(name_) - 1] = '\0';
 }
 
-void Thread::Start() {
-  data_->thread_ =
-      SbThreadCreate(stack_size_, kSbThreadNoPriority, kSbThreadNoAffinity,
-                     true, name_, ThreadEntry, this);
+bool Thread::Start() {
+  pthread_attr_t attr;
+  if (pthread_attr_init(&attr) != 0) {
+    return false;
+  }
+  pthread_attr_setstacksize(&attr, stack_size_);
+  pthread_create(&data_->thread_, &attr, ThreadEntry, this);
+
+  pthread_attr_destroy(&attr);
+
+  return data_->thread_ != 0;
 }
 
-void Thread::Join() { SbThreadJoin(data_->thread_, nullptr); }
+void Thread::Join() { pthread_join(data_->thread_, nullptr); }
 
 Thread::LocalStorageKey Thread::CreateThreadLocalKey() {
-  return SbThreadCreateLocalKey(nullptr);
+  pthread_key_t key = 0;
+  pthread_key_create(&key, nullptr);
+  return key;
 }
 
 void Thread::DeleteThreadLocalKey(LocalStorageKey key) {
-  SbThreadDestroyLocalKey(key);
+  pthread_key_delete(key);
 }
 
 void* Thread::GetThreadLocal(LocalStorageKey key) {
-  return SbThreadGetLocalValue(key);
+  return pthread_getspecific(key);
 }
 
 void Thread::SetThreadLocal(LocalStorageKey key, void* value) {
-  bool result = SbThreadSetLocalValue(key, value);
+  bool result = pthread_setspecific(key, value) == 0;
   DCHECK(result);
 }
 
 class StarboardTimezoneCache : public TimezoneCache {
  public:
-  double DaylightSavingsOffset(double time_ms) override { return 0.0; }
   void Clear(TimeZoneDetection time_zone_detection) override {}
   ~StarboardTimezoneCache() override {}
 
@@ -471,7 +454,22 @@ class StarboardDefaultTimezoneCache : public StarboardTimezoneCache {
     return SbTimeZoneGetName();
   }
   double LocalTimeOffset(double time_ms, bool is_utc) override {
-    return SbTimeZoneGetCurrent() * 60000.0;
+    // SbTimeZoneGetCurrent returns an offset west of Greenwich, which has the
+    // opposite sign V8 expects.
+    // The starboard function returns offset in minutes. We convert to return
+    // value in milliseconds.
+    return SbTimeZoneGetCurrent() * 60.0 * msPerSecond * (-1);
+  }
+  double DaylightSavingsOffset(double time_ms) override {
+    int64_t posix_microseconds = starboard::CurrentPosixTime();
+    EzTimeValue value = {
+        posix_microseconds / 1'000'000,
+        (int32_t)(posix_microseconds % 1'000'000)
+    };
+    EzTimeExploded ez_exploded;
+    bool result = EzTimeValueExplode(&value, kEzTimeZoneLocal, &ez_exploded,
+                                     NULL);
+    return ez_exploded.tm_isdst > 0 ? 3600 * msPerSecond : 0;
   }
 
   ~StarboardDefaultTimezoneCache() override {}
@@ -493,6 +491,23 @@ void OS::AdjustSchedulingParams() {}
 bool OS::DiscardSystemPages(void* address, size_t size) {
   // Starboard API does not support this function yet.
   return true;
+}
+
+// static
+Stack::StackSlot Stack::GetStackStart() {
+  SB_NOTIMPLEMENTED();
+  return nullptr;
+}
+
+// static
+Stack::StackSlot Stack::GetCurrentStackPosition() {
+  void* addresses[1];
+  const size_t count = SbSystemGetStack(addresses, 1);
+  if (count > 0) {
+    return addresses[0];
+  } else {
+    return nullptr;
+  }
 }
 
 }  // namespace base
